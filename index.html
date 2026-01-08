@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Karşıt İnceleme Takip Sistemi</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/lucide-react@0.263.1/dist/umd/lucide-react.js"></script>
+</head>
+<body class="m-0 p-0">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+    const { FileText, User, Building2, CheckCircle2, Clock, Trash2, Eye, Plus, Search, Upload, Loader } = lucide;
+
+    function App() {
+      const [kayitlar, setKayitlar] = useState([]);
+      const [modalAcik, setModalAcik] = useState(false);
+      const [detayModal, setDetayModal] = useState(null);
+      const [filtre, setFiltre] = useState({ durum: 'tumu', arama: '' });
+      const [yukleniyor, setYukleniyor] = useState(false);
+      const [dosyaYuklendi, setDosyaYuklendi] = useState(false);
+      const [yuklenenDosyalar, setYuklenenDosyalar] = useState([]);
+      const [yeniKayit, setYeniKayit] = useState({
+        geldigiYMM: '',
+        musteriFirma: '',
+        yazininSayisi: '',
+        faturaTarihleri: '',
+        durum: 'devam-ediyor'
+      });
+
+      useEffect(() => {
+        yukleKayitlar();
+      }, []);
+
+      const yukleKayitlar = async () => {
+        try {
+          const sonuc = await window.storage.list('karsit:');
+          if (sonuc && sonuc.keys) {
+            const yuklenenler = await Promise.all(
+              sonuc.keys.map(async key => {
+                const veri = await window.storage.get(key);
+                return veri ? JSON.parse(veri.value) : null;
+              })
+            );
+            setKayitlar(yuklenenler.filter(k => k !== null));
+          }
+        } catch {
+          setKayitlar([]);
+        }
+      };
+
+      const dosyaYukle = async (e) => {
+        const dosyalar = Array.from(e.target.files);
+        if (dosyalar.length === 0) return;
+
+        setYukleniyor(true);
+        setYuklenenDosyalar(dosyalar);
+
+        try {
+          const tumContentler = [];
+
+          for (const dosya of dosyalar) {
+            let base64Data = '';
+            let mediaType = '';
+
+            if (dosya.type === 'application/pdf') {
+              mediaType = 'application/pdf';
+              base64Data = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result.split(',')[1]);
+                reader.onerror = reject;
+                reader.readAsDataURL(dosya);
+              });
+            } else if (dosya.type.startsWith('image/')) {
+              mediaType = dosya.type;
+              base64Data = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result.split(',')[1]);
+                reader.onerror = reject;
+                reader.readAsDataURL(dosya);
+              });
+            } else {
+              continue;
+            }
+
+            tumContentler.push({
+              type: mediaType === 'application/pdf' ? 'document' : 'image',
+              source: {
+                type: 'base64',
+                media_type: mediaType,
+                data: base64Data
+              }
+            });
+          }
+
+          if (tumContentler.length === 0) {
+            alert('Gecerli dosya bulunamadi!');
+            setYukleniyor(false);
+            return;
+          }
+
+          const mesajIcerik = [
+            ...tumContentler,
+            {
+              type: 'text',
+              text: `Bunlar ${dosyalar.length} adet KDV Karsit Inceleme yazisi sayfasidir. Tum sayfalari birlikte analiz et ve asagidaki bilgileri cikar. Sadece JSON formatinda dondur:\\n{\\n  "geldigiYMM": "A- Bilgi Isteyen YMM Bilgileri bolumunden YMM'nin Adi Soyadi (ornek: Hakki SAYGILI)",\\n  "musteriFirma": "B- KDV Iade Sozlesmesi Yapilan Firmanin Bilgileri veya C- Karsit Incelemeye Konu Mukellef Firma bolumunden firmanin unvani",\\n  "yazininSayisi": "Yazi sayisi (Sayi: ... yazan kisim)",\\n  "faturaTarihleri": "Fatura tarihleri (Fatura Tarihi sutunundaki tarihler)"\\n}\\n\\nONEMLI: A bolumundeki "Adi Soyadi" satirindaki ismi geldigiYMM olarak al. B veya C bolumundeki firma unvanini musteriFirma olarak al. Sadece JSON dondur, baska aciklama ekleme.`
+            }
+          ];
+
+          const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              model: 'claude-sonnet-4-20250514',
+              max_tokens: 1000,
+              messages: [
+                {
+                  role: 'user',
+                  content: mesajIcerik
+                }
+              ]
+            })
+          });
+
+          const data = await response.json();
+          
+          if (data.content && data.content[0] && data.content[0].text) {
+            let jsonText = data.content[0].text.trim();
+            jsonText = jsonText.replace(/```json/g, '').replace(/```/g, '').trim();
+            
+            const cikanVeri = JSON.parse(jsonText);
+            
+            setYeniKayit({
+              geldigiYMM: cikanVeri.geldigiYMM || '',
+              musteriFirma: cikanVeri.musteriFirma || '',
+              yazininSayisi: cikanVeri.yazininSayisi || '',
+              faturaTarihleri: cikanVeri.faturaTarihleri || '',
+              durum: 'devam-ediyor'
+            });
+
+            setDosyaYuklendi(true);
+          }
+        } catch (error) {
+          alert('Dosya analiz hatasi: ' + error.message);
+        } finally {
+          setYukleniyor(false);
+        }
+      };
+
+      const kayitEkle = async () => {
+        if (!yeniKayit.geldigiYMM || !yeniKayit.musteriFirma) {
+          alert('Lutfen YMM ve Firma bilgilerini doldurun!');
+          return;
+        }
+
+        const kayit = {
+          id: `karsit:${Date.now()}`,
+          ...yeniKayit,
+          yuklemeTarihi: new Date().toISOString()
+        };
+
+        await window.storage.set(kayit.id, JSON.stringify(kayit));
+        setKayitlar([...kayitlar, kayit]);
+        setModalAcik(false);
+        setDosyaYuklendi(false);
+        setYuklenenDosyalar([]);
+        setYeniKayit({
+          geldigiYMM: '',
+          musteriFirma: '',
+          yazininSayisi: '',
+          faturaTarihleri: '',
+          durum: 'devam-ediyor'
+        });
+      };
+
+      const durumDegistir = async (id, yeniDurum) => {
+        const guncel = kayitlar.map(k => 
+          k.id === id ? { ...k, durum: yeniDurum } : k
+        );
+        const degisen = guncel.find(k => k.id === id);
+        await window.storage.set(id, JSON.stringify(degisen));
+        setKayitlar(guncel);
+      };
+
+      const sil = async (id) => {
+        if (confirm('Silmek istediginizden emin misiniz?')) {
+          await window.storage.delete(id);
+          setKayitlar(kayitlar.filter(k => k.id !== id));
+        }
+      };
+
+      const tarihFormat = (iso) => {
+        if (!iso) return '-';
+        return new Date(iso).toLocaleDateString('tr-TR', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+      };
+
+      const filtrele = () => {
+        let sonuc = [...kayitlar];
+        if (filtre.durum !== 'tumu') {
+          sonuc = sonuc.filter(k => k.durum === filtre.durum);
+        }
+        if (filtre.arama) {
+          const ara = filtre.arama.toLowerCase();
+          sonuc = sonuc.filter(k =>
+            k.geldigiYMM.toLowerCase().includes(ara) ||
+            k.musteriFirma.toLowerCase().includes(ara) ||
+            k.yazininSayisi.toLowerCase().includes(ara)
+          );
+        }
+        sonuc.sort((a, b) => new Date(b.yuklemeTarihi) - new Date(a.yuklemeTarihi));
+        return sonuc;
+      };
+
+      const stats = {
+        toplam: kayitlar.length,
+        devam: kayitlar.filter(k => k.durum === 'devam-ediyor').length,
+        bitti: kayitlar.filter(k => k.durum === 'tamamlandi').length
+      };
+
+      const Icon = ({ icon: IconComponent, ...props }) => {
+        return React.createElement(IconComponent, props);
+      };
+
+      return (
+        <div className="min-h-screen bg-gray-50 p-6">
+          <div className="max-w-7xl mx-auto">
+            
+            <div className="bg-white rounded-lg shadow p-6 mb-6">
+              <div className="flex items-center justify-between flex-wrap gap-4">
+                <div>
+                  <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3">
+                    <Icon icon={FileText} className="text-blue-600" size={32} />
+                    Karsit Inceleme Takip
+                  </h1>
+                  <p className="text-gray-600 mt-2">Dosya yukleyerek otomatik kayit olustur</p>
+                </div>
+                <button
+                  onClick={() => setModalAcik(true)}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg flex items-center gap-2"
+                >
+                  <Icon icon={Plus} size={20} />
+                  Dosya Yukle
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-gray-600 text-sm">Toplam</p>
+                    <p className="text-3xl font-bold text-gray-900">{stats.toplam}</p>
+                  </div>
+                  <Icon icon={FileText} className="text-blue-600" size={32} />
+                </div>
+              </div>
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-gray-600 text-sm">Devam Eden</p>
+                    <p className="text-3xl font-bold text-yellow-600">{stats.devam}</p>
+                  </div>
+                  <Icon icon={Clock} className="text-yellow-600" size={32} />
+                </div>
+              </div>
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-gray-600 text-sm">Tamamlanan</p>
+                    <p className="text-3xl font-bold text-green-600">{stats.bitti}</p>
+                  </div>
+                  <Icon icon={CheckCircle2} className="text-green-600" size={32} />
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-lg shadow p-6 mb-6">
+              <div className="flex flex-col md:flex-row gap-4">
+                <div className="flex-1 relative">
+                  <Icon icon={Search} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" size={20} />
+                  <input
+                    type="text"
+                    placeholder="Ara..."
+                    value={filtre.arama}
+                    onChange={(e) => setFiltre({ ...filtre, arama: e.target.value })}
+                    className="w-full pl-10 pr-4 py-2 border rounded-lg"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  {['tumu', 'devam-ediyor', 'tamamlandi'].map(d => (
+                    <button
+                      key={d}
+                      onClick={() => setFiltre({ ...filtre, durum: d })}
+                      className={`px-4 py-2 rounded-lg ${
+                        filtre.durum === d ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'
+                      }`}
+                    >
+                      {d === 'tumu' ? 'Tumu' : d === 'devam-ediyor' ? 'Devam Eden' : 'Tamamlanan'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-lg shadow overflow-hidden">
+              {filtrele().length === 0 ? (
+                <div className="p-12 text-center">
+                  <Icon icon={FileText} className="mx-auto text-gray-300 mb-4" size={64} />
+                  <p className="text-gray-500">Kayit bulunamadi</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500">Sira</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500">Tarih</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500">Bilgi Isteyen YMM</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500">Karsit Yapilacak Firma</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500">Sayi</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500">Faturalar</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500">Durum</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500">Islem</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {filtrele().map((k, index) => (
+                        <tr key={k.id} className="hover:bg-gray-50">
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                            {index + 1}
+                          </td>
+                          <td className="px-6 py-4 text-sm">{tarihFormat(k.yuklemeTarihi)}</td>
+                          <td className="px-6 py-4 text-sm">{k.geldigiYMM}</td>
+                          <td className="px-6 py-4 text-sm">{k.musteriFirma}</td>
+                          <td className="px-6 py-4 text-sm">{k.yazininSayisi || '-'}</td>
+                          <td className="px-6 py-4 text-sm">{k.faturaTarihleri || '-'}</td>
+                          <td className="px-6 py-4">
+                            <span className={`px-3 py-1 rounded-full text-xs ${
+                              k.durum === 'tamamlandi' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+                            }`}>
+                              {k.durum === 'tamamlandi' ? 'Tamamlandi' : 'Devam Ediyor'}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="flex gap-2">
+                              <button onClick={() => setDetayModal(k)} className="text-blue-600 hover:text-blue-800">
+                                <Icon icon={Eye} size={18} />
+                              </button>
+                              <button
+                                onClick={() => durumDegistir(k.id, k.durum === 'devam-ediyor' ? 'tamamlandi' : 'devam-ediyor')}
+                                className="text-green-600 hover:text-green-800"
+                              >
+                                <Icon icon={k.durum === 'devam-ediyor' ? CheckCircle2 : Clock} size={18} />
+                              </button>
+                              <button onClick={() => sil(k.id)} className="text-red-600 hover:text-red-800">
+                                <Icon icon={Trash2} size={18} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {modalAcik && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+                <div className="p-6 border-b">
+                  <h2 className="text-2xl font-bold">Dosya Yukle</h2>
+                  <p className="text-gray-600 mt-1">Birden fazla PDF, JPEG veya PNG yukleyin</p>
+                </div>
+                
+                <div className="p-6 space-y-6">
+                  
+                  <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-blue-500 transition-colors">
+                    <input
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      onChange={dosyaYukle}
+                      className="hidden"
+                      id="dosya-yukle"
+                      disabled={yukleniyor}
+                      multiple
+                    />
+                    <label htmlFor="dosya-yukle" className="cursor-pointer flex flex-col items-center">
+                      {yukleniyor ? (
+                        <>
+                          <Icon icon={Loader} className="text-blue-600 animate-spin mb-4" size={48} />
+                          <p className="text-lg font-medium text-gray-700">Analiz ediliyor...</p>
+                          <p className="text-sm text-gray-500 mt-2">{yuklenenDosyalar.length} dosya isleniyor</p>
+                        </>
+                      ) : dosyaYuklendi ? (
+                        <>
+                          <Icon icon={CheckCircle2} className="text-green-600 mb-4" size={48} />
+                          <p className="text-lg font-medium text-gray-700">Basarili!</p>
+                          <p className="text-sm text-gray-500 mt-2">{yuklenenDosyalar.length} dosya analiz edildi</p>
+                        </>
+                      ) : (
+                        <>
+                          <Icon icon={Upload} className="text-gray-400 mb-4" size={48} />
+                          <p className="text-lg font-medium text-gray-700">Dosya Yukle</p>
+                          <p className="text-sm text-gray-500 mt-2">PDF, JPEG veya PNG (Birden fazla secebilirsiniz)</p>
+                        </>
+                      )}
+                    </label>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Bilgi Isteyen YMM *</label>
+                      <input
+                        type="text"
+                        value={yeniKayit.geldigiYMM}
+                        onChange={(e) => setYeniKayit({ ...yeniKayit, geldigiYMM: e.target.value })}
+                        className="w-full px-3 py-2 border rounded-lg"
+                        placeholder="Hakki SAYGILI"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Karsit Yapilacak Firma *</label>
+                      <input
+                        type="text"
+                        value={yeniKayit.musteriFirma}
+                        onChange={(e) => setYeniKayit({ ...yeniKayit, musteriFirma: e.target.value })}
+                        className="w-full px-3 py-2 border rounded-lg"
+                        placeholder="ARTKIM FUARCILIK A.S."
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Yazi Sayisi</label>
+                      <input
+                        type="text"
+                        value={yeniKayit.yazininSayisi}
+                        onChange={(e) => setYeniKayit({ ...yeniKayit, yazininSayisi: e.target.value })}
+                        className="w-full px-3 py-2 border rounded-lg"
+                        placeholder="YMM/01104749/2025/0007"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Fatura Tarihleri</label>
+                      <input
+                        type="text"
+                        value={yeniKayit.faturaTarihleri}
+                        onChange={(e) => setYeniKayit({ ...yeniKayit, faturaTarihleri: e.target.value })}
+                        className="w-full px-3 py-2 border rounded-lg"
+                        placeholder="26.11.2025"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Durum</label>
+                      <select
+                        value={yeniKayit.durum}
+                        onChange={(e) => setYeniKayit({ ...yeniKayit, durum: e.target.value })}
+                        className="w-full px-3 py-2 border rounded-lg"
+                      >
+                        <option value="devam-ediyor">Devam Ediyor</option>
+                        <option value="tamamlandi">Tamamlandi</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-6 border-t flex justify-end gap-3">
+                  <button
+                    onClick={() => {
+                      setModalAcik(false);
+                      setDosyaYuklendi(false);
+                      setYuklenenDosyalar([]);
+                    }}
+                    className="px-6 py-2 border rounded-lg hover:bg-gray-50"
+                  >
+                    Iptal
+                  </button>
+                  <button
+                    onClick={kayitEkle}
+                    disabled={yukleniyor}
+                    className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    Kaydet
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {detayModal && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+              <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full">
+                <div className="p-6 border-b flex justify-between items-center">
+                  <h2 className="text-2xl font-bold">Detaylar</h2>
+                  <button onClick={() => setDetayModal(null)} className="text-gray-400 hover:text-gray-600 text-2xl">×</button>
+                </div>
+                <div className="p-6 space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-gray-50 p-4 rounded">
+                      <p className="text-sm text-gray-600">Yukleme Tarihi</p>
+                      <p className="font-semibold">{tarihFormat(detayModal.yuklemeTarihi)}</p>
+                    </div>
+                    <div className="bg-blue-50 p-4 rounded">
+                      <p className="text-sm text-gray-600">Bilgi Isteyen YMM</p>
+                      <p className="font-semibold">{detayModal.geldigiYMM}</p>
+                    </div>
+                    <div className="bg-green-50 p-4 rounded">
+                      <p className="text-sm text-gray-600">Karsit Yapilacak Firma</p>
+                      <p className="font-semibold">{detayModal.musteriFirma}</p>
+                    </div>
+                    <div className="bg-purple-50 p-4 rounded">
+                      <p className="text-sm text-gray-600">Yazi Sayisi</p>
+                      <p className="font-semibold">{detayModal.yazininSayisi || '-'}</p>
+                    </div>
+                    <div className="bg-yellow-50 p-4 rounded col-span-2">
+                      <p className="text-sm text-gray-600">Fatura Tarihleri</p>
+                      <p className="font-semibold">{detayModal.faturaTarihleri || '-'}</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="p-6 border-t flex justify-end">
+                  <button
+                    onClick={() => setDetayModal(null)}
+                    className="px-6 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700"
+                  >
+                    Kapat
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
